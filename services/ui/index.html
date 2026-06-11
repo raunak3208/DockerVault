@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DockerVault</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #222; min-height: 100vh; }
+    header { background: #1a1a2e; color: #fff; padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; }
+    header h1 { font-size: 1.2rem; font-weight: 600; letter-spacing: 0.5px; }
+    #user-info { font-size: 0.85rem; display: flex; gap: 1rem; align-items: center; }
+    #logout-btn { background: transparent; border: 1px solid #aaa; color: #fff; padding: 0.3rem 0.8rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
+    main { max-width: 860px; margin: 2rem auto; padding: 0 1rem; }
+    .card { background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); padding: 1.5rem; margin-bottom: 1.5rem; }
+    .card h2 { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; color: #333; }
+    .form-row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+    input, select { flex: 1; padding: 0.5rem 0.75rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.9rem; min-width: 120px; }
+    button.primary { background: #1a1a2e; color: #fff; border: none; padding: 0.5rem 1.2rem; border-radius: 4px; cursor: pointer; font-size: 0.9rem; white-space: nowrap; }
+    button.primary:hover { background: #2d2d5e; }
+    button.danger { background: #c0392b; color: #fff; border: none; padding: 0.3rem 0.8rem; border-radius: 4px; cursor: pointer; font-size: 0.8rem; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 2px solid #eee; color: #666; font-weight: 500; }
+    td { padding: 0.6rem 0.75rem; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    .tag { display: inline-block; background: #eef2ff; color: #4338ca; padding: 0.15rem 0.5rem; border-radius: 3px; font-size: 0.75rem; }
+    .expired { color: #c0392b; }
+    #auth-section, #app-section { display: none; }
+    .auth-form { display: flex; flex-direction: column; gap: 0.75rem; max-width: 340px; margin: 0 auto; }
+    .auth-form input { padding: 0.6rem 0.8rem; }
+    .auth-form button { padding: 0.6rem; }
+    .toggle-link { font-size: 0.85rem; color: #4338ca; cursor: pointer; text-align: center; }
+    .msg { font-size: 0.85rem; padding: 0.5rem 0.75rem; border-radius: 4px; margin-top: 0.5rem; }
+    .msg.err { background: #fdecea; color: #c0392b; }
+    .msg.ok { background: #e8f5e9; color: #2e7d32; }
+    #loading { text-align: center; padding: 3rem; color: #888; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>DockerVault</h1>
+  <div id="user-info" style="display:none">
+    <span id="username-display"></span>
+    <button id="logout-btn">Logout</button>
+  </div>
+</header>
+
+<main>
+  <div id="loading">Loading...</div>
+
+  <div id="auth-section">
+    <div class="card" style="max-width:400px;margin:0 auto">
+      <h2 id="auth-title">Login</h2>
+      <div class="auth-form" id="auth-form">
+        <input id="auth-username" type="text" placeholder="Username" />
+        <input id="auth-password" type="password" placeholder="Password" />
+        <button class="primary" id="auth-submit">Login</button>
+        <div class="toggle-link" id="auth-toggle">Don't have an account? Register</div>
+        <div id="auth-msg"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="app-section">
+    <div class="card">
+      <h2>Store a secret</h2>
+      <div class="form-row">
+        <input id="secret-name" type="text" placeholder="Secret name" />
+        <input id="secret-value" type="text" placeholder="Secret value" />
+        <input id="secret-ttl" type="number" placeholder="TTL (days)" value="30" style="max-width:120px" />
+        <button class="primary" id="store-btn">Store</button>
+      </div>
+      <div id="store-msg"></div>
+    </div>
+
+    <div class="card">
+      <h2>Your secrets</h2>
+      <table>
+        <thead><tr><th>Name</th><th>TTL</th><th>Expires</th><th></th></tr></thead>
+        <tbody id="secrets-tbody"><tr><td colspan="4" style="color:#aaa">No secrets stored</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+  const API = "/api";
+  let token = localStorage.getItem("dvtoken");
+  let isRegister = false;
+
+  function getToken() { return token; }
+
+  async function api(path, opts = {}) {
+    const headers = { "Content-Type": "application/json" };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    const res = await fetch(API + path, { ...opts, headers: { ...headers, ...(opts.headers || {}) } });
+    return res;
+  }
+
+  function showMsg(el, msg, type) {
+    el.textContent = msg;
+    el.className = "msg " + type;
+    setTimeout(() => { el.textContent = ""; el.className = "msg"; }, 3000);
+  }
+
+  async function loadSecrets() {
+    const res = await api("/secrets");
+    if (!res.ok) return;
+    const data = await res.json();
+    const tbody = document.getElementById("secrets-tbody");
+    if (!data.length) {
+      tbody.innerHTML = `<tr><td colspan="4" style="color:#aaa">No secrets stored</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = data.map(s => {
+      const exp = new Date(s.expires_at);
+      const expired = exp < new Date();
+      return `<tr>
+        <td><strong>${s.name}</strong></td>
+        <td><span class="tag">${s.ttl_days}d</span></td>
+        <td class="${expired ? 'expired' : ''}">${exp.toLocaleDateString()}</td>
+        <td><button class="danger" data-id="${s.id}">Delete</button></td>
+      </tr>`;
+    }).join("");
+    tbody.querySelectorAll("[data-id]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        await api(`/secrets/${btn.dataset.id}`, { method: "DELETE" });
+        loadSecrets();
+      });
+    });
+  }
+
+  function showApp() {
+    document.getElementById("loading").style.display = "none";
+    document.getElementById("auth-section").style.display = "none";
+    document.getElementById("app-section").style.display = "block";
+    document.getElementById("user-info").style.display = "flex";
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    document.getElementById("username-display").textContent = payload.sub?.slice(0, 8) + "...";
+    loadSecrets();
+  }
+
+  function showAuth() {
+    document.getElementById("loading").style.display = "none";
+    document.getElementById("auth-section").style.display = "block";
+    document.getElementById("app-section").style.display = "none";
+    document.getElementById("user-info").style.display = "none";
+  }
+
+  document.getElementById("auth-toggle").addEventListener("click", () => {
+    isRegister = !isRegister;
+    document.getElementById("auth-title").textContent = isRegister ? "Register" : "Login";
+    document.getElementById("auth-submit").textContent = isRegister ? "Register" : "Login";
+    document.getElementById("auth-toggle").textContent = isRegister
+      ? "Already have an account? Login"
+      : "Don't have an account? Register";
+  });
+
+  document.getElementById("auth-submit").addEventListener("click", async () => {
+    const username = document.getElementById("auth-username").value.trim();
+    const password = document.getElementById("auth-password").value;
+    const msg = document.getElementById("auth-msg");
+    if (!username || !password) return showMsg(msg, "fill in all fields", "err");
+    const path = isRegister ? "/auth/register" : "/auth/login";
+    const res = await api(path, { method: "POST", body: JSON.stringify({ username, password }) });
+    const data = await res.json();
+    if (!res.ok) return showMsg(msg, data.error, "err");
+    if (isRegister) {
+      showMsg(msg, "registered, please login", "ok");
+      isRegister = false;
+      document.getElementById("auth-title").textContent = "Login";
+      document.getElementById("auth-submit").textContent = "Login";
+    } else {
+      token = data.token;
+      localStorage.setItem("dvtoken", token);
+      showApp();
+    }
+  });
+
+  document.getElementById("logout-btn").addEventListener("click", () => {
+    token = null;
+    localStorage.removeItem("dvtoken");
+    showAuth();
+  });
+
+  document.getElementById("store-btn").addEventListener("click", async () => {
+    const name = document.getElementById("secret-name").value.trim();
+    const value = document.getElementById("secret-value").value.trim();
+    const ttl_days = document.getElementById("secret-ttl").value;
+    const msg = document.getElementById("store-msg");
+    if (!name || !value) return showMsg(msg, "name and value required", "err");
+    const res = await api("/secrets", { method: "POST", body: JSON.stringify({ name, value, ttl_days }) });
+    const data = await res.json();
+    if (!res.ok) return showMsg(msg, data.error, "err");
+    showMsg(msg, `stored: ${data.name}`, "ok");
+    document.getElementById("secret-name").value = "";
+    document.getElementById("secret-value").value = "";
+    loadSecrets();
+  });
+
+  if (token) showApp(); else showAuth();
+</script>
+</body>
+</html>
